@@ -45,7 +45,7 @@ function uriEscape(str: string): string {
     return encodeURIComponent(str)
       .replace(/[^A-Za-z0-9_.~\-%]+/g, (c) => c)
       .replace(/[*]/g, (ch) => `%${ch.charCodeAt(0).toString(16).toUpperCase()}`);
-  } catch () {
+  } catch {
     return '';
   }
 }
