@@ -1,7 +1,8 @@
 'use client';
 
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import { optimizeImageWithAI, downloadImageAsDataURL } from '../utils/aiOptimize';
+import { loadVolcKeys, saveVolcKeys, clearVolcKeys } from '../utils/volcKeys';
 
 interface AIOptimizeModalProps {
   imageSrc: string;
@@ -21,6 +22,26 @@ export default function AIOptimizeModal({
   const [error, setError] = useState<string | null>(null);
   const [previewImage, setPreviewImage] = useState<string | null>(null);
   const [customPrompt, setCustomPrompt] = useState('');
+  // 即梦密钥输入状态
+  const [accessKeyId, setAccessKeyId] = useState('');
+  const [secretAccessKey, setSecretAccessKey] = useState('');
+  const [showKeys, setShowKeys] = useState(false);
+  const [saveKeys, setSaveKeys] = useState(true);
+  const [showKeyPanel, setShowKeyPanel] = useState(false);
+
+  // 打开弹窗时，从本地存储回填已保存的密钥
+  useEffect(() => {
+    if (isOpen) {
+      const saved = loadVolcKeys();
+      if (saved) {
+        setAccessKeyId(saved.accessKeyId);
+        setSecretAccessKey(saved.secretAccessKey);
+      } else {
+        // 未保存过密钥时，展开密钥面板引导用户填写
+        setShowKeyPanel(true);
+      }
+    }
+  }, [isOpen]);
 
   const DEFAULT_PROMPT = '图片修改为：chibi画风，背景白底。pixel art style, 16-bit, retro game aesthetic, sharp focus, high contrast, clean lines, detailed pixel art, masterpiece, best quality';
 
@@ -35,8 +56,17 @@ export default function AIOptimizeModal({
     try {
       const prompt = customPrompt.trim() || DEFAULT_PROMPT;
 
+      // 按勾选项处理密钥的本地保存
+      if (saveKeys && accessKeyId.trim() && secretAccessKey.trim()) {
+        saveVolcKeys({ accessKeyId: accessKeyId.trim(), secretAccessKey: secretAccessKey.trim() });
+      } else {
+        clearVolcKeys();
+      }
+
       const result = await optimizeImageWithAI(imageSrc, {
         customPrompt: prompt,
+        accessKeyId: accessKeyId.trim() || undefined,
+        secretAccessKey: secretAccessKey.trim() || undefined,
         onProgress: (p) => setProgress(p)
       });
 
@@ -60,11 +90,17 @@ export default function AIOptimizeModal({
         errorMessage = '图片未能通过安全检测，请尝试使用其他图片。可能的原因：\n• 图片包含敏感内容\n• 图片格式不支持\n• 图片质量过低';
       }
 
+      // 处理未填写密钥的错误
+      if (errorMessage.includes('NO_API_KEY')) {
+        errorMessage = errorMessage.replace('NO_API_KEY: ', '');
+        setShowKeyPanel(true);
+      }
+
       setError(errorMessage);
     } finally {
       setIsProcessing(false);
     }
-  }, [imageSrc, customPrompt]);
+  }, [imageSrc, customPrompt, accessKeyId, secretAccessKey, saveKeys]);
 
   const handleConfirm = useCallback(() => {
     if (previewImage) {
@@ -105,6 +141,99 @@ export default function AIOptimizeModal({
 
         {/* 内容区域 */}
         <div className="flex-1 overflow-auto p-6">
+          {/* 即梦密钥配置 */}
+          <div className="mb-6 border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
+            <button
+              type="button"
+              onClick={() => setShowKeyPanel((v) => !v)}
+              disabled={isProcessing}
+              className="w-full flex items-center justify-between px-4 py-3 bg-gray-50 dark:bg-gray-800/50 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+            >
+              <span className="text-sm font-medium text-gray-700 dark:text-gray-300 flex items-center gap-2">
+                <svg className="w-4 h-4 text-amber-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" />
+                </svg>
+                即梦 API 密钥配置
+                {!accessKeyId || !secretAccessKey ? (
+                  <span className="text-xs font-normal text-red-500">（必填：请输入你的密钥）</span>
+                ) : (
+                  <span className="text-xs font-normal text-green-600 dark:text-green-400">（已填写）</span>
+                )}
+              </span>
+              <svg className={`w-4 h-4 text-gray-400 transition-transform ${showKeyPanel ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+              </svg>
+            </button>
+            {showKeyPanel && (
+              <div className="p-4 space-y-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
+                      Access Key ID
+                    </label>
+                    <input
+                      type={showKeys ? 'text' : 'password'}
+                      value={accessKeyId}
+                      onChange={(e) => setAccessKeyId(e.target.value)}
+                      placeholder="例：AKLTxxxxxx"
+                      disabled={isProcessing || !!previewImage}
+                      autoComplete="off"
+                      className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-amber-500 focus:border-transparent disabled:opacity-50"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
+                      Secret Access Key
+                    </label>
+                    <input
+                      type={showKeys ? 'text' : 'password'}
+                      value={secretAccessKey}
+                      onChange={(e) => setSecretAccessKey(e.target.value)}
+                      placeholder="例：MDQ2xxxxxxxx"
+                      disabled={isProcessing || !!previewImage}
+                      autoComplete="off"
+                      className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-amber-500 focus:border-transparent disabled:opacity-50"
+                    />
+                  </div>
+                </div>
+                <div className="flex flex-wrap items-center gap-4 text-xs text-gray-600 dark:text-gray-400">
+                  <label className="flex items-center gap-1.5 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={showKeys}
+                      onChange={(e) => setShowKeys(e.target.checked)}
+                      className="rounded border-gray-300"
+                    />
+                    显示密钥
+                  </label>
+                  <label className="flex items-center gap-1.5 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={saveKeys}
+                      onChange={(e) => setSaveKeys(e.target.checked)}
+                      disabled={isProcessing || !!previewImage}
+                      className="rounded border-gray-300"
+                    />
+                    记住密钥（仅保存在本浏览器）
+                  </label>
+                </div>
+                <p className="text-xs text-gray-500 dark:text-gray-400 leading-relaxed">
+                  密钥仅保存在你的浏览器本地，由浏览器直接调用火山引擎（即梦）API，不经过本站服务器。
+                  获取方式：登录
+                  <a
+                    href="https://console.volcengine.com/iam/keymanage/"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-purple-600 dark:text-purple-400 underline ml-1 mr-1"
+                  >
+                    火山引擎控制台 - 访问密钥
+                  </a>
+                  创建 Access Key，需开通即梦 AI 图像生成服务（jimeng_t2i_v40）。
+                </p>
+              </div>
+            )}
+          </div>
+
           {/* 提示词输入 */}
           <div className="mb-6">
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">

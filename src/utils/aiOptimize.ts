@@ -1,10 +1,16 @@
 // AI图片优化工具函数
 
+import { callVolcEngineAI } from '../lib/volcEngineClient';
+import { loadVolcKeys } from './volcKeys';
+
 const DEFAULT_PROMPT = '图片修改为：chibi画风，背景白底。pixel art style, 16-bit, retro game aesthetic, sharp focus, high contrast, clean lines, detailed pixel art, masterpiece, best quality';
 
 export interface AIOptimizeOptions {
   customPrompt?: string;
   onProgress?: (progress: number) => void;
+  // 用户在界面上输入的即梦密钥（优先级最高）
+  accessKeyId?: string;
+  secretAccessKey?: string;
 }
 
 export interface AIOptimizeResult {
@@ -135,15 +141,28 @@ export async function optimizeImageWithAI(
   try {
     const { customPrompt, onProgress } = options;
 
+    // 密钥来源：界面输入 > localStorage 已保存的密钥
+    const savedKeys = loadVolcKeys();
+    const accessKeyId = (options.accessKeyId || savedKeys?.accessKeyId || '').trim();
+    const secretAccessKey = (options.secretAccessKey || savedKeys?.secretAccessKey || '').trim();
+
     // 更新进度
     onProgress?.(10);
 
     // 将图片转换为base64
     const base64Image = await imageToBase64(imageSrc);
 
+    const prompt = customPrompt || DEFAULT_PROMPT;
+
+    // 情况一：用户提供了即梦密钥，浏览器直接调用火山引擎API（无需后端）
+    if (accessKeyId && secretAccessKey) {
+      onProgress?.(30);
+      return await callVolcEngineAI(base64Image, prompt, accessKeyId, secretAccessKey, onProgress);
+    }
+
+    // 情况二：未配置密钥，走后端 /api/ai-optimize（Cloudflare Pages / Node 服务端部署）
     onProgress?.(30);
 
-    // 调用API
     const response = await fetch('/api/ai-optimize', {
       method: 'POST',
       headers: {
@@ -151,22 +170,29 @@ export async function optimizeImageWithAI(
       },
       body: JSON.stringify({
         imageBase64: base64Image,
-        prompt: customPrompt || DEFAULT_PROMPT
+        prompt
       })
     });
 
     onProgress?.(80);
 
     if (!response.ok) {
-      // 尝试解析JSON错误，如果失败则使用文本
+      // 先读文本（响应流只能读一次），再尝试解析为JSON错误信息
       let errorMessage: string;
       try {
-        const errorData = await response.json();
-        errorMessage = errorData.message || `API request failed: ${response.status}`;
-      } catch {
-        // 如果不是JSON，尝试获取文本
         const errorText = await response.text();
-        errorMessage = errorText || `API request failed: ${response.status}`;
+        try {
+          const errorData = JSON.parse(errorText);
+          errorMessage = errorData.message || `API request failed: ${response.status}`;
+        } catch {
+          errorMessage = errorText || `API request failed: ${response.status}`;
+        }
+      } catch {
+        errorMessage = `API request failed: ${response.status}`;
+      }
+      // 本地开发时 /api/ai-optimize 不存在（404），提示用户配置密钥
+      if (response.status === 404 || /no such api/i.test(errorMessage)) {
+        throw new Error('NO_API_KEY: 当前环境没有可用的AI优化服务，请在上方填写即梦的 Access Key ID 和 Secret Access Key 后重试。');
       }
       throw new Error(errorMessage);
     }

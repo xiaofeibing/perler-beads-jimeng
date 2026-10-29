@@ -295,14 +295,15 @@ export async function callVolcEngineAI(
 
     const submitResult = await submitTask(imageBase64, prompt, accessKeyId, secretAccessKey);
 
-    if (!submitResult.task_id) {
+    // 官方返回结构：{ code: 10000, data: { task_id: "..." }, message }
+    if (submitResult.code !== 10000 || !submitResult.data?.task_id) {
       return {
         success: false,
-        error: 'Failed to submit task: no task_id returned'
+        error: submitResult.message || 'Failed to submit task: no task_id returned'
       };
     }
 
-    const taskId = submitResult.task_id;
+    const taskId = submitResult.data.task_id;
     console.log('Task submitted, task_id:', taskId);
 
     const maxRetries = 60;
@@ -317,22 +318,36 @@ export async function callVolcEngineAI(
 
       console.log('Query result:', JSON.stringify(queryResult));
 
-      if (queryResult.status === 10000 && queryResult.data && queryResult.data.task_status === 'success') {
-        const imageUrl = queryResult.data.images?.[0]?.url;
-
-        if (imageUrl) {
-          onProgress?.(100);
-          return {
-            success: true,
-            imageUrl: imageUrl
-          };
-        }
-      }
-
-      if (queryResult.status !== 10000 || queryResult.data?.task_status === 'failed') {
+      // 优先判断外层 code，非 10000 代表失败（如敏感词/风控等）
+      if (queryResult.code && queryResult.code !== 10000) {
         const errorMessage = queryResult.message || 'Task failed';
+        if (queryResult.code === 50411 || queryResult.code === 50511 || queryResult.code === 50518 || queryResult.code === 50519 || errorMessage.includes('Risk')) {
+          throw new Error(`IMAGE_RISK: 图片未能通过安全检测，请尝试使用其他图片。`);
+        }
         throw new Error(errorMessage);
       }
+
+      const taskData = queryResult.data;
+      // code=10000 后，再根据 data.status 判断任务状态
+      if (taskData && taskData.status === 'done') {
+        const imageUrl = taskData.image_urls?.[0];
+        if (imageUrl) {
+          onProgress?.(100);
+          return { success: true, imageUrl };
+        }
+        const base64Item = taskData.binary_data_base64?.[0];
+        if (base64Item) {
+          onProgress?.(100);
+          return { success: true, imageUrl: `data:image/png;base64,${base64Item}` };
+        }
+        throw new Error('Task completed but no image data returned');
+      }
+
+      // 任务过期/未找到，无需继续轮询
+      if (taskData && (taskData.status === 'not_found' || taskData.status === 'expired')) {
+        throw new Error('任务已过期或未找到，请重新发起优化');
+      }
+      // in_queue / generating 状态：继续轮询
     }
 
     return {
